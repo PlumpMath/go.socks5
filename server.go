@@ -5,16 +5,73 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 )
 
-type Conn interface {
-	io.Reader
-	io.Writer
-	io.Closer
+type Dialer interface {
+	Dial(network, addr string) (c net.Conn, err error)
 }
 
 type Server interface {
-	Connect(req *Msg) (rep *Msg, c Conn, err error)
+	Dialer
+}
+
+func Serve(s Server, l net.Listener) error {
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			return err
+		}
+		go handleConn(s, conn)
+	}
+}
+
+func ListenAndServe(s Server, addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return Serve(s, listener)
+}
+
+func makeReply(conn net.Conn, err error) *Msg {
+	if err != nil {
+		return &Msg{Code: ReplyError(err)}
+	}
+
+	addrStr := conn.LocalAddr().String()
+	// The contract of conn.LocalAddr().String() requires that addrStr
+	// is valid, therefore we can neglect the possibility of parse errors
+	// in the below:
+	hostStr, portStr, _ := net.SplitHostPort(addrStr)
+	port, _ := strconv.Atoi(portStr)
+
+	rep := &Msg{
+		Code: byte(REP_SUCCESS),
+		Port: uint16(port),
+	}
+	rep.Addr.IPAddr = net.ParseIP(hostStr)
+	if rep.Addr.IPAddr == nil {
+		rep.Addr = Address{
+			Atyp:       ATYP_DOMAINNAME,
+			DomainName: hostStr,
+		}
+	} else if len(rep.Addr.IPAddr) == 4 {
+		rep.Addr.Atyp = ATYP_IPV4
+	} else {
+		rep.Addr.Atyp = ATYP_IPV6
+	}
+	return rep
+}
+
+func doCopy(a, b io.ReadWriteCloser) {
+	done := make(chan byte)
+	go func() {
+		io.Copy(a, b)
+		done <- 0
+	}()
+	io.Copy(b, a)
+	<-done
 }
 
 func handleConn(s Server, conn net.Conn) {
@@ -31,20 +88,20 @@ func handleConn(s Server, conn net.Conn) {
 	}
 	switch req.Code {
 	case REQ_CONNECT:
-		rep, socksConn, err := s.Connect(req)
+		socksConn, err := s.Dial("tcp", net.JoinHostPort(
+			req.Addr.String(),
+			strconv.Itoa(int(req.Port)),
+		))
+		rep := makeReply(socksConn, err)
 		rep.WriteTo(conn)
 		if err != nil {
 			log.Println("Error handling request: ", err)
+			return
 		}
-		if rep.Code == REP_SUCCESS {
-			done := make(chan byte)
-			go func(){
-				io.Copy(conn, socksConn)
-				done <- 0
-			}()
-			io.Copy(socksConn, conn)
-			<-done
-		}
+		doCopy(conn, socksConn)
+	default:
+		(&Msg{Code: byte(REP_CMD_NOT_SUPPORTED)}).WriteTo(conn)
+		log.Println("Command not supported: ", req.Code)
 	}
 }
 
@@ -62,7 +119,7 @@ func authConn(conn net.Conn) error {
 	if err != nil {
 		return err
 	}
-	for i := range(buf) {
+	for i := range buf {
 		if buf[i] == NO_AUTH_REQUIRED {
 			_, err = conn.Write([]byte{VER, NO_AUTH_REQUIRED})
 			return err
