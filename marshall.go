@@ -61,6 +61,16 @@ func ReplyError(err error) byte {
 	return byte(code)
 }
 
+// helper function to keep things concise in the WriteTo methods
+// for Address and Msg.
+func writeHelper(n *int64, err *error, w io.Writer, p []byte) {
+	if *err == nil {
+		var written int
+		written, *err = w.Write(p)
+		*n += int64(written)
+	}
+}
+
 // An IP address or domain name as used by the socks protocol
 type Address struct {
 	Atyp   byte   // The address type; one of the ATYP_* constants above.
@@ -71,8 +81,7 @@ type Address struct {
 	DomainName string
 }
 
-// TODO: it would be more intuitive (and more useful outside of Msg's
-// ReadFrom if this read in the Atyp.
+// Read an address, including the address type byte, from the reader r.
 func (a *Address) ReadFrom(r io.Reader) (n int64, err error) {
 	var buf []byte
 	var count int
@@ -81,6 +90,13 @@ func (a *Address) ReadFrom(r io.Reader) (n int64, err error) {
 		n += int64(count)
 		a.IPAddr = buf
 	}
+	buf = []byte{0}
+	count, err = r.Read(buf)
+	n += int64(count)
+	if err != nil {
+		return
+	}
+	a.Atyp = buf[0]
 	switch a.Atyp {
 	case ATYP_IPV4:
 		buf = make([]byte, 4)
@@ -109,6 +125,23 @@ func (a *Address) ReadFrom(r io.Reader) (n int64, err error) {
 	return
 }
 
+// Write the address (including the Atyp byte) to the writer w
+func (a *Address) WriteTo(w io.Writer) (n int64, err error) {
+	write := func(p []byte) { writeHelper(&n, &err, w, p) }
+	write([]byte{a.Atyp})
+	if a.Atyp == ATYP_DOMAINNAME {
+		size := len(a.DomainName)
+		if size >= (1 << 8) {
+			return n, BadStr
+		}
+		write([]byte{byte(size)})
+		write([]byte(a.DomainName))
+	} else {
+		write(a.IPAddr)
+	}
+	return
+}
+
 // Format the address as a string suitable for use as the host part of
 // the address string passed to a Dialer (sans brackets for ipv6).
 func (a Address) String() string {
@@ -129,7 +162,7 @@ type Msg struct {
 // Read a message from the reader r
 func (m *Msg) ReadFrom(r io.Reader) (n int64, err error) {
 	var count int
-	buf := make([]byte, 4)
+	buf := make([]byte, 3)
 	count, err = r.Read(buf)
 	n += int64(count)
 	if err != nil {
@@ -142,7 +175,6 @@ func (m *Msg) ReadFrom(r io.Reader) (n int64, err error) {
 	if buf[2] != 0 {
 		return n, BadRsv
 	}
-	m.Addr.Atyp = buf[3]
 	count2, err := m.Addr.ReadFrom(r)
 	n += count2
 	if err != nil {
@@ -161,24 +193,12 @@ func (m *Msg) ReadFrom(r io.Reader) (n int64, err error) {
 
 // Write the message to the writer w
 func (m *Msg) WriteTo(w io.Writer) (n int64, err error) {
-	write := func(p []byte) {
-		if err == nil {
-			var written int
-			written, err = w.Write(p)
-			n += int64(written)
-		}
-	}
-
-	write([]byte{VER, byte(m.Code), 0, m.Addr.Atyp})
-	if m.Addr.Atyp == ATYP_DOMAINNAME {
-		size := len(m.Addr.DomainName)
-		if size >= (1 << 8) {
-			return n, BadStr
-		}
-		write([]byte{byte(size)})
-		write([]byte(m.Addr.DomainName))
-	} else {
-		write(m.Addr.IPAddr)
+	write := func(p []byte) { writeHelper(&n, &err, w, p) }
+	write([]byte{VER, byte(m.Code), 0})
+	count, err := m.Addr.WriteTo(w)
+	n += int64(count)
+	if err != nil {
+		return
 	}
 	port := []byte{0, 0}
 	binary.BigEndian.PutUint16(port, m.Port)
