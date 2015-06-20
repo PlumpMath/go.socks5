@@ -26,12 +26,7 @@ const (
 	ATYP_IPV4       = 0x1
 	ATYP_DOMAINNAME = 0x03
 	ATYP_IPV6       = 0x4
-)
 
-// An error representable in the socks 5 protocol's reply field
-type ReplyCode byte
-
-var (
 	// Replies:
 	REP_SUCCESS                = ReplyCode(0x0)
 	REP_GENERAL_SERVER_FAILURE = ReplyCode(0x1)
@@ -44,19 +39,13 @@ var (
 	REP_ATYP_NOT_SUPPORTED     = ReplyCode(0x8)
 )
 
-func (c ReplyCode) Error() string {
-	return []string{
-		"success",
-		"general server failure",
-		"connection not allowed",
-		"network unreachable",
-		"host unreachable",
-		"connection refused",
-		"ttl expired",
-		"command not supported",
-		"address type not supported",
-	}[c]
-}
+var (
+	// Marshalling related errors
+	BadVer  = errors.New("Unexpected version number (expected 5)")
+	BadRsv  = errors.New("Reserved field was not zero.")
+	BadAtyp = errors.New("Unsupported address address type")
+	BadStr  = errors.New("String too long (max 255 chars)")
+)
 
 // Returns an error code corresponding to the error "err". If err is of
 // type ReplyCode, ReplyError returns err. If err is nil, ReplyError returns
@@ -72,27 +61,18 @@ func ReplyError(err error) byte {
 	return byte(code)
 }
 
-var (
-	BadVer  = errors.New("Unexpected version number (expected 5)")
-	BadRsv  = errors.New("Reserved field was not zero.")
-	BadAtyp = errors.New("Unsupported address address type")
-	BadStr  = errors.New("String too long")
-)
-
+// An IP address or domain name as used by the socks protocol
 type Address struct {
-	Atyp       byte
-	IPAddr     net.IP // used if Atyp is *not* ATYP_DOMAINNAME
-	DomainName string // used if Atyp *is* ATYP_DOMAINNAME
+	Atyp   byte   // The address type; one of the ATYP_* constants above.
+	IPAddr net.IP // used if Atyp is *not* ATYP_DOMAINNAME
+
+	// used if Atyp *is* ATYP_DOMAINNAME. This must be at a maximum 255
+	// characters, as only one byte is used to encode the length:
+	DomainName string
 }
 
-func (a Address) String() string {
-	if a.Atyp == ATYP_DOMAINNAME {
-		return a.DomainName
-	} else {
-		return a.IPAddr.String()
-	}
-}
-
+// TODO: it would be more intuitive (and more useful outside of Msg's
+// ReadFrom if this read in the Atyp.
 func (a *Address) ReadFrom(r io.Reader) (n int64, err error) {
 	var buf []byte
 	var count int
@@ -129,12 +109,24 @@ func (a *Address) ReadFrom(r io.Reader) (n int64, err error) {
 	return
 }
 
+// Format the address as a string suitable for use as the host part of
+// the address string passed to a Dialer (sans brackets for ipv6).
+func (a Address) String() string {
+	if a.Atyp == ATYP_DOMAINNAME {
+		return a.DomainName
+	} else {
+		return a.IPAddr.String()
+	}
+}
+
+// A socks5 protocol message (either a request or a reply)
 type Msg struct {
 	Code byte // CMD for requests, REP for replies
 	Addr Address
 	Port uint16
 }
 
+// Read a message from the reader r
 func (m *Msg) ReadFrom(r io.Reader) (n int64, err error) {
 	var count int
 	buf := make([]byte, 4)
@@ -167,6 +159,7 @@ func (m *Msg) ReadFrom(r io.Reader) (n int64, err error) {
 	return
 }
 
+// Write the message to the writer w
 func (m *Msg) WriteTo(w io.Writer) (n int64, err error) {
 	write := func(p []byte) {
 		if err == nil {
@@ -179,7 +172,7 @@ func (m *Msg) WriteTo(w io.Writer) (n int64, err error) {
 	write([]byte{VER, byte(m.Code), 0, m.Addr.Atyp})
 	if m.Addr.Atyp == ATYP_DOMAINNAME {
 		size := len(m.Addr.DomainName)
-		if size > (1 << 7) {
+		if size >= (1 << 8) {
 			return n, BadStr
 		}
 		write([]byte{byte(size)})
@@ -191,4 +184,21 @@ func (m *Msg) WriteTo(w io.Writer) (n int64, err error) {
 	binary.BigEndian.PutUint16(port, m.Port)
 	write(port)
 	return
+}
+
+// An error representable in the socks 5 protocol's reply field
+type ReplyCode byte
+
+func (c ReplyCode) Error() string {
+	return []string{
+		"success",
+		"general server failure",
+		"connection not allowed",
+		"network unreachable",
+		"host unreachable",
+		"connection refused",
+		"ttl expired",
+		"command not supported",
+		"address type not supported",
+	}[c]
 }

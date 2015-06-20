@@ -1,3 +1,16 @@
+// Package socks5 implements message marshalling and a server for the
+// socks 5 protocol (RFC 1928).
+//
+// So far, only the CONNECT request is supported, and only the "No
+// authentication required" method is supported for authentication.
+//
+// The Server interface is defined to allow different backends to be
+// used for establishing connections. Users interested primarily in
+// writing servers need only concern themselves with that interface,
+// and the functions Serve/ListenAndServe.
+//
+// The message marshalling is also exposed, in the hopes that it may be
+// useful.
 package socks5
 
 import (
@@ -8,14 +21,32 @@ import (
 	"strconv"
 )
 
+// The Dialer interface provides the ability to establish network
+// connections. The Dial method works the same way as the Dial function
+// from the net package.
 type Dialer interface {
 	Dial(network, addr string) (c net.Conn, err error)
 }
 
+// A server handles socks requests. Right now this is equivalent to a
+// Dialer; in the future more methods may be needed to support requests
+// other than CONNECT.
 type Server interface {
 	Dialer
 }
 
+// Listen on the address addr and then accept connections, as with
+// the Serve function.
+func ListenAndServe(s Server, addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	return Serve(s, listener)
+}
+
+// Accept connections via l and, invoke the server s to handle them.
+// Spawn a new goroutine for each request.
 func Serve(s Server, l net.Listener) error {
 	for {
 		conn, err := l.Accept()
@@ -26,14 +57,8 @@ func Serve(s Server, l net.Listener) error {
 	}
 }
 
-func ListenAndServe(s Server, addr string) error {
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-	return Serve(s, listener)
-}
-
+// Build a reply message based on err and the information provided by
+// `conn`. `conn` may be nil if err is non-nil.
 func makeReply(conn net.Conn, err error) *Msg {
 	if err != nil {
 		return &Msg{Code: ReplyError(err)}
@@ -64,7 +89,8 @@ func makeReply(conn net.Conn, err error) *Msg {
 	return rep
 }
 
-func doCopy(a, b io.ReadWriteCloser) {
+// Copy data between a and b (both ways) concurrently.
+func doCopy(a, b io.ReadWriter) {
 	done := make(chan byte)
 	go func() {
 		io.Copy(a, b)
@@ -74,6 +100,7 @@ func doCopy(a, b io.ReadWriteCloser) {
 	<-done
 }
 
+// Handle the socks connection conn using the server s
 func handleConn(s Server, conn net.Conn) {
 	err := authConn(conn)
 	if err != nil {
@@ -99,12 +126,15 @@ func handleConn(s Server, conn net.Conn) {
 			return
 		}
 		doCopy(conn, socksConn)
+		conn.Close()
+		socksConn.Close()
 	default:
 		(&Msg{Code: byte(REP_CMD_NOT_SUPPORTED)}).WriteTo(conn)
 		log.Println("Command not supported: ", req.Code)
 	}
 }
 
+// Do the authentication handshake. Right now we only support NO_AUTH_REQUIRED.
 func authConn(conn net.Conn) error {
 	buf := make([]byte, 255)
 	_, err := conn.Read(buf[:2])
