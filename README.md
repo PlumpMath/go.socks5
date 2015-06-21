@@ -10,6 +10,9 @@ exposed, in the hopes that it may be useful.
 There is also an example server that just makes connections from the
 local machine when servicing requests in `cmd/socks5d`.
 
+This package must be imported by the canonical path 
+`zenhack.net/go/socks5`; using the Github URL will not work.
+
 # LICENSE
 
 Free/Open Source under the MIT license (see `COPYING`)

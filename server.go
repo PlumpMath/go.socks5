@@ -11,7 +11,7 @@
 //
 // The message marshalling is also exposed, in the hopes that it may be
 // useful.
-package socks5
+package socks5 // import "zenhack.net/go/socks5"
 
 import (
 	"errors"
