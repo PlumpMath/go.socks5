@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"net"
 
 	"zenhack.net/go/socks5"
 )
@@ -12,5 +13,5 @@ var (
 
 func main() {
 	flag.Parse()
-	socks5.ListenAndServe(socks5.PassThroughDialer, *addr)
+	socks5.ListenAndServe(&net.Dialer{}, *addr)
 }
