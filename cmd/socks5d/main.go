@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 
-	"github.com/zenhack/go.socks5"
+	"zenhack.net/go/socks5"
 )
 
 var (
